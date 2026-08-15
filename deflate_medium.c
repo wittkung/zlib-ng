@@ -42,7 +42,7 @@ Z_FORCEINLINE static int emit_match(deflate_state *s, unsigned char *window, str
 
 /* insert_match assumes: s->lookahead > match.match_length + WANT_MIN_MATCH */
 Z_FORCEINLINE static void insert_match(deflate_state *s, unsigned char *window, struct match match,
-                                       const uint32_t max_len, const unsigned int lookahead) {
+                                       const uint32_t max_len) {
     uint32_t match_len = match.match_length;
     uint32_t strstart = match.strstart;
 
@@ -65,7 +65,7 @@ Z_FORCEINLINE static void insert_match(deflate_state *s, unsigned char *window, 
     /* Insert new strings in the hash table only if the match length
      * is not too large. This saves time but degrades compression.
      */
-    if (match_len <= max_len && lookahead >= WANT_MIN_MATCH) {
+    if (match_len <= max_len) {
         match_len--; /* string at strstart already in table */
         strstart++;
 
@@ -81,10 +81,6 @@ Z_FORCEINLINE static void insert_match(deflate_state *s, unsigned char *window, 
     } else {
         strstart += match_len;
         insert_knuth(s, window, strstart + 2 - STD_MIN_MATCH);
-
-        /* If lookahead < WANT_MIN_MATCH, ins_h is garbage, but it does not
-         * matter since it will be recomputed at next deflate call.
-         */
     }
 }
 
@@ -230,7 +226,7 @@ Z_INTERNAL block_state deflate_medium(deflate_state *s, int flush) {
         }
 
         if (LIKELY(lookahead > (unsigned int)(current_match.match_length + WANT_MIN_MATCH)))
-            insert_match(s, window, current_match, max_len, lookahead);
+            insert_match(s, window, current_match, max_len);
 
         /* now, look ahead one */
         if (LIKELY(!early_exit && lookahead > MIN_LOOKAHEAD && (uint32_t)(current_match.strstart + current_match.match_length) < window_end)) {
