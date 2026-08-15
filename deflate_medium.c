@@ -20,12 +20,9 @@ struct match {
     uint16_t orgstart;
 };
 
-static int emit_match(deflate_state *s, unsigned char *window, struct match match) {
+Z_FORCEINLINE static int emit_match(deflate_state *s, unsigned char *window, struct match match) {
     int bflush = 0;
     uint32_t match_len = match.match_length;
-
-    /* None of the below functions care about s->lookahead, so decrement it early */
-    s->lookahead -= match_len;
 
     /* matches that are not long enough we need to emit as literals */
     if (match_len < WANT_MIN_MATCH) {
@@ -45,7 +42,7 @@ static int emit_match(deflate_state *s, unsigned char *window, struct match matc
 
 /* insert_match assumes: s->lookahead > match.match_length + WANT_MIN_MATCH */
 Z_FORCEINLINE static void insert_match(deflate_state *s, unsigned char *window, struct match match,
-                                       const uint32_t max_len) {
+                                       const uint32_t max_len, const unsigned int lookahead) {
     uint32_t match_len = match.match_length;
     uint32_t strstart = match.strstart;
 
@@ -91,7 +88,7 @@ Z_FORCEINLINE static void insert_match(deflate_state *s, unsigned char *window, 
     }
 }
 
-Z_FORCEINLINE static struct match find_best_match(deflate_state *s, uint32_t hash_head) {
+Z_FORCEINLINE static struct match find_best_match(deflate_state *s, uint32_t hash_head, unsigned int lookahead) {
     struct match m;
     int32_t dist;
 
@@ -100,6 +97,8 @@ Z_FORCEINLINE static struct match find_best_match(deflate_state *s, uint32_t has
 
     dist = (int32_t)s->strstart - (int32_t)hash_head;
     if (dist <= (int32_t)MAX_DIST(s) && dist > 0 && hash_head != 0) {
+        /* Sync lookahead before longest_match()*/
+        s->lookahead = lookahead;
         /* To simplify the code, we prevent matches with the string
          * of window index 0 (in particular we have to avoid a match
          * of the string with itself at the start of the input file).
@@ -181,6 +180,7 @@ Z_INTERNAL block_state deflate_medium(deflate_state *s, int flush) {
     ALIGNED_(16) struct match current_match = {0};
                  struct match next_match = {0};
     unsigned char *window = s->window;
+    unsigned int lookahead = s->lookahead;
     uint32_t window_end = s->window_size - MIN_LOOKAHEAD;
     uint32_t max_len = 16 * s->max_insert_length;
 
@@ -196,13 +196,19 @@ Z_INTERNAL block_state deflate_medium(deflate_state *s, int flush) {
          * for the next match, plus WANT_MIN_MATCH bytes to insert the
          * string following the next current_match.
          */
-        if (UNLIKELY(s->lookahead < MIN_LOOKAHEAD)) {
+        if (UNLIKELY(lookahead < MIN_LOOKAHEAD)) {
+            s->lookahead = lookahead;
             PREFIX(fill_window)(s);
-            if (UNLIKELY(s->lookahead < MIN_LOOKAHEAD && flush == Z_NO_FLUSH)) {
-                return need_more;
+            lookahead = s->lookahead;
+
+            if (UNLIKELY(lookahead < MIN_LOOKAHEAD)) {
+                if (UNLIKELY(flush == Z_NO_FLUSH)) {
+                    return need_more;
+                }
+                if (UNLIKELY(lookahead == 0)) {
+                    break; /* flush the current block */
+                }
             }
-            if (UNLIKELY(s->lookahead == 0))
-                break; /* flush the current block */
             next_match.match_length = 0;
         }
 
@@ -216,22 +222,22 @@ Z_INTERNAL block_state deflate_medium(deflate_state *s, int flush) {
             next_match.match_length = 0;
         } else {
             hash_head = 0;
-            if (LIKELY(s->lookahead >= WANT_MIN_MATCH)) {
+            if (LIKELY(lookahead >= WANT_MIN_MATCH)) {
                 hash_head = insert_knuth(s, window, s->strstart);
             }
 
-            current_match = find_best_match(s, hash_head);
+            current_match = find_best_match(s, hash_head, lookahead);
         }
 
-        if (LIKELY(s->lookahead > (unsigned int)(current_match.match_length + WANT_MIN_MATCH)))
-            insert_match(s, window, current_match, max_len);
+        if (LIKELY(lookahead > (unsigned int)(current_match.match_length + WANT_MIN_MATCH)))
+            insert_match(s, window, current_match, max_len, lookahead);
 
         /* now, look ahead one */
         if (LIKELY(!early_exit && lookahead > MIN_LOOKAHEAD && (uint32_t)(current_match.strstart + current_match.match_length) < window_end)) {
             s->strstart = current_match.strstart + current_match.match_length;
             hash_head = insert_knuth(s, window, s->strstart);
 
-            next_match = find_best_match(s, hash_head);
+            next_match = find_best_match(s, hash_head, lookahead);
 
             uint32_t tmp_cmatch_len_sub = current_match.match_length - 1;
             if (tmp_cmatch_len_sub
@@ -247,14 +253,19 @@ Z_INTERNAL block_state deflate_medium(deflate_state *s, int flush) {
         }
 
         /* now emit the current match */
+        lookahead -= current_match.match_length;
         bflush = emit_match(s, window, current_match);
 
         /* move the "cursor" forward */
         s->strstart += current_match.match_length;
 
-        if (UNLIKELY(bflush))
+        if (UNLIKELY(bflush)){
+            s->lookahead = lookahead;
             FLUSH_BLOCK(s, window, 0);
+        }
     }
+    s->lookahead = lookahead;
+
     s->insert = s->strstart < (STD_MIN_MATCH - 1) ? s->strstart : (STD_MIN_MATCH - 1);
     if (flush == Z_FINISH) {
         FLUSH_BLOCK(s, window, 1);
