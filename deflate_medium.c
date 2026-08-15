@@ -20,7 +20,7 @@ struct match {
     uint16_t orgstart;
 };
 
-Z_FORCEINLINE static int emit_match(deflate_state *s, unsigned char *window, struct match match) {
+Z_FORCEINLINE static int emit_match(deflate_state *s, unsigned char *Z_RESTRICT window, struct match match) {
     int bflush = 0;
     uint32_t match_len = match.match_length;
 
@@ -41,7 +41,7 @@ Z_FORCEINLINE static int emit_match(deflate_state *s, unsigned char *window, str
 }
 
 /* insert_match assumes: s->lookahead > match.match_length + WANT_MIN_MATCH */
-Z_FORCEINLINE static void insert_match(deflate_state *s, unsigned char *window, struct match match,
+Z_FORCEINLINE static void insert_match(deflate_state *s, unsigned char *Z_RESTRICT window, struct match match,
                                        const uint32_t max_len) {
     uint32_t match_len = match.match_length;
     uint32_t strstart = match.strstart;
@@ -121,7 +121,7 @@ Z_FORCEINLINE static struct match find_best_match(deflate_state *s, uint32_t has
  * - (current->match_length - 1) <= next->match_start
  * - (current->match_length - 1) <= next->strstart
  */
-static void fizzle_matches(deflate_state *s, unsigned char *window, struct match *current, struct match *next) {
+static void fizzle_matches(deflate_state *s, unsigned char *Z_RESTRICT window, struct match *Z_RESTRICT current, struct match *Z_RESTRICT next) {
     unsigned char *match, *orig;
     struct match c, n;
     int changed = 0;
