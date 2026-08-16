@@ -20,26 +20,6 @@ struct match {
     uint16_t orgstart;
 };
 
-Z_FORCEINLINE static int emit_match(deflate_state *s, unsigned char *Z_RESTRICT window, struct match match) {
-    int bflush = 0;
-    uint32_t match_len = match.match_length;
-
-    /* matches that are not long enough we need to emit as literals */
-    if (match_len < WANT_MIN_MATCH) {
-        while (match_len) {
-            bflush += zng_tr_tally_lit(s, window[match.strstart]);
-            match_len--;
-            match.strstart++;
-        }
-        return bflush;
-    }
-
-    check_match(s, match.strstart, match.match_start, match_len);
-
-    bflush += zng_tr_tally_dist(s, match.strstart - match.match_start, match_len - STD_MIN_MATCH);
-    return bflush;
-}
-
 /* insert_match assumes: s->lookahead > match.match_length + WANT_MIN_MATCH */
 Z_FORCEINLINE static void insert_match(deflate_state *s, unsigned char *Z_RESTRICT window, struct match match,
                                        const uint32_t max_len) {
@@ -186,6 +166,7 @@ Z_INTERNAL block_state deflate_medium(deflate_state *s, int flush) {
     for (;;) {
         uint32_t hash_head;   /* head of the hash chain */
         int bflush = 0;       /* set if current block must be flushed */
+        uint32_t curr_match_len;
 
         /* Make sure that we always have enough lookahead, except
          * at the end of the input file. We need STD_MAX_MATCH bytes
@@ -225,36 +206,48 @@ Z_INTERNAL block_state deflate_medium(deflate_state *s, int flush) {
 
             current_match = find_best_match(s, hash_head, lookahead);
         }
+        curr_match_len = current_match.match_length;
 
-        if (LIKELY(lookahead > (unsigned int)(current_match.match_length + WANT_MIN_MATCH)))
+        if (LIKELY(lookahead > (unsigned int)(curr_match_len + WANT_MIN_MATCH)))
             insert_match(s, window, current_match, max_len);
 
         /* now, look ahead one */
-        if (LIKELY(!early_exit && lookahead > MIN_LOOKAHEAD && (uint32_t)(current_match.strstart + current_match.match_length) < window_end)) {
-            s->strstart = current_match.strstart + current_match.match_length;
+        if (LIKELY(!early_exit && lookahead > MIN_LOOKAHEAD && (uint32_t)(current_match.strstart + curr_match_len) < window_end)) {
+            s->strstart = current_match.strstart + curr_match_len;
             hash_head = insert_knuth(s, window, s->strstart);
 
             next_match = find_best_match(s, hash_head, lookahead);
 
-            uint32_t tmp_cmatch_len_sub = current_match.match_length - 1;
+            uint32_t tmp_cmatch_len_sub = curr_match_len - 1;
             if (tmp_cmatch_len_sub
                      && next_match.match_length >= WANT_MIN_MATCH
                      && tmp_cmatch_len_sub <= next_match.match_start
                      && tmp_cmatch_len_sub <= next_match.strstart) {
                 fizzle_matches(s, window, &current_match, &next_match);
+                curr_match_len = current_match.match_length;
             }
 
             s->strstart = current_match.strstart;
+            if (curr_match_len == 0) {
+                /* If match length is zero, jump to next loop iteration */
+                continue;
+            }
         } else {
             next_match.match_length = 0;
         }
 
         /* now emit the current match */
-        lookahead -= current_match.match_length;
-        bflush = emit_match(s, window, current_match);
+        if (LIKELY(curr_match_len == 1)) {
+            /* matches shorter than WANT_MIN_MATCH are set to 1, we need to emit these as literals */
+            bflush = zng_tr_tally_lit(s, window[current_match.strstart]);
+        } else {
+            check_match(s, current_match.strstart, current_match.match_start, curr_match_len);
+            bflush = zng_tr_tally_dist(s, current_match.strstart - current_match.match_start, curr_match_len - STD_MIN_MATCH);
+        }
 
         /* move the "cursor" forward */
-        s->strstart += current_match.match_length;
+        s->strstart += curr_match_len;
+        lookahead -= curr_match_len;
 
         if (UNLIKELY(bflush)){
             s->lookahead = lookahead;
